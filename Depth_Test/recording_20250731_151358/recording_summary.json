@@ -1,0 +1,18 @@
+{
+  "recording_info": {
+    "start_time": "2025-07-31T15:13:58.095418",
+    "end_time": "2025-07-31T15:14:15.864071",
+    "duration_seconds": 12.872038125991821,
+    "total_video_frames": 348,
+    "average_video_fps": 27.035345653405276
+  },
+  "files_created": {
+    "depth_video": "depth.avi",
+    "color_video": "color.avi",
+    "depth_data_batches": "depth_data/",
+    "depth_metadata": "depth_metadata.json",
+    "camera_parameters": "camera_parameters.json",
+    "camera_params_numpy": "camera_params.npz",
+    "robot_data": "robot_data.jsonl"
+  }
+}

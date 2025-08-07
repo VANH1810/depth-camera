@@ -1,0 +1,53 @@
+{
+  "recording_info": {
+    "start_time": "2025-07-31T15:13:58.095418",
+    "timestamp": "2025-07-31T15:13:58.227954",
+    "fps": 30,
+    "rs_resolution": [
+      640,
+      480
+    ],
+    "usb_resolution": [
+      1280,
+      720
+    ]
+  },
+  "device_info": {
+    "name": "Intel RealSense D435I",
+    "serial": "250222073564",
+    "firmware_version": "5.13.0.55"
+  },
+  "depth_intrinsics": {
+    "width": 640,
+    "height": 480,
+    "fx": 386.25,
+    "fy": 386.25,
+    "ppx": 321.4998474121094,
+    "ppy": 234.6820068359375,
+    "model": "distortion.brown_conrady",
+    "coeffs": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "color_intrinsics": {
+    "width": 640,
+    "height": 480,
+    "fx": 605.3391723632812,
+    "fy": 604.979736328125,
+    "ppx": 320.5218505859375,
+    "ppy": 252.93692016601562,
+    "model": "distortion.inverse_brown_conrady",
+    "coeffs": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "depth_scale": 0.0010000000474974513
+}

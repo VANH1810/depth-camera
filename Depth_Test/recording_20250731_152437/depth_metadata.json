@@ -1,0 +1,35 @@
+{
+  "batches": [
+    {
+      "batch_index": 0,
+      "filename": "depth_batch_000000.npz",
+      "frame_count": 100,
+      "start_timestamp": 1753946680.0666602,
+      "end_timestamp": 1753946684.2855554
+    },
+    {
+      "batch_index": 1,
+      "filename": "depth_batch_000001.npz",
+      "frame_count": 100,
+      "start_timestamp": 1753946684.3806648,
+      "end_timestamp": 1753946688.220028
+    },
+    {
+      "batch_index": 2,
+      "filename": "depth_batch_000002.npz",
+      "frame_count": 100,
+      "start_timestamp": 1753946688.255744,
+      "end_timestamp": 1753946691.5555866
+    },
+    {
+      "batch_index": 3,
+      "filename": "depth_batch_000003.npz",
+      "frame_count": 25,
+      "start_timestamp": 1753946691.5936208,
+      "end_timestamp": 1753946692.392777
+    }
+  ],
+  "total_frames": 325,
+  "recording_start_time": "2025-07-31T15:24:38.019385",
+  "recording_end_time": "2025-07-31T15:24:54.811759"
+}

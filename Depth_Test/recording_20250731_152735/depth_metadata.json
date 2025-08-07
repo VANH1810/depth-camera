@@ -1,0 +1,105 @@
+{
+  "batches": [
+    {
+      "batch_index": 0,
+      "filename": "depth_batch_000000.npz",
+      "frame_count": 100,
+      "start_timestamp": 1753946858.1426077,
+      "end_timestamp": 1753946862.4200213
+    },
+    {
+      "batch_index": 1,
+      "filename": "depth_batch_000001.npz",
+      "frame_count": 100,
+      "start_timestamp": 1753946862.4767728,
+      "end_timestamp": 1753946866.2269168
+    },
+    {
+      "batch_index": 2,
+      "filename": "depth_batch_000002.npz",
+      "frame_count": 100,
+      "start_timestamp": 1753946866.2617342,
+      "end_timestamp": 1753946869.5611775
+    },
+    {
+      "batch_index": 3,
+      "filename": "depth_batch_000003.npz",
+      "frame_count": 100,
+      "start_timestamp": 1753946869.6001792,
+      "end_timestamp": 1753946872.8986442
+    },
+    {
+      "batch_index": 4,
+      "filename": "depth_batch_000004.npz",
+      "frame_count": 100,
+      "start_timestamp": 1753946872.933352,
+      "end_timestamp": 1753946876.2327478
+    },
+    {
+      "batch_index": 5,
+      "filename": "depth_batch_000005.npz",
+      "frame_count": 100,
+      "start_timestamp": 1753946876.2686098,
+      "end_timestamp": 1753946879.5685625
+    },
+    {
+      "batch_index": 6,
+      "filename": "depth_batch_000006.npz",
+      "frame_count": 100,
+      "start_timestamp": 1753946879.6070213,
+      "end_timestamp": 1753946882.904425
+    },
+    {
+      "batch_index": 7,
+      "filename": "depth_batch_000007.npz",
+      "frame_count": 100,
+      "start_timestamp": 1753946882.94065,
+      "end_timestamp": 1753946886.2406485
+    },
+    {
+      "batch_index": 8,
+      "filename": "depth_batch_000008.npz",
+      "frame_count": 100,
+      "start_timestamp": 1753946886.2755911,
+      "end_timestamp": 1753946889.576254
+    },
+    {
+      "batch_index": 9,
+      "filename": "depth_batch_000009.npz",
+      "frame_count": 100,
+      "start_timestamp": 1753946889.6150303,
+      "end_timestamp": 1753946892.911683
+    },
+    {
+      "batch_index": 10,
+      "filename": "depth_batch_000010.npz",
+      "frame_count": 100,
+      "start_timestamp": 1753946892.9466786,
+      "end_timestamp": 1753946896.2468226
+    },
+    {
+      "batch_index": 11,
+      "filename": "depth_batch_000011.npz",
+      "frame_count": 100,
+      "start_timestamp": 1753946896.282197,
+      "end_timestamp": 1753946899.5827074
+    },
+    {
+      "batch_index": 12,
+      "filename": "depth_batch_000012.npz",
+      "frame_count": 100,
+      "start_timestamp": 1753946899.6207676,
+      "end_timestamp": 1753946902.919241
+    },
+    {
+      "batch_index": 13,
+      "filename": "depth_batch_000013.npz",
+      "frame_count": 53,
+      "start_timestamp": 1753946902.9537826,
+      "end_timestamp": 1753946904.6871352
+    }
+  ],
+  "total_frames": 1353,
+  "recording_start_time": "2025-07-31T15:27:36.091968",
+  "recording_end_time": "2025-07-31T15:28:26.920635"
+}
