@@ -6,7 +6,7 @@ RED = (0,0,255)
 BLUE = (255, 0, 0)
 WHITE = (255, 255, 255)
 margin = 2
-font = ImageFont.truetype('./source/fonts/epkgobld.ttf', 15)
+font = ImageFont.truetype('libs/source/epkgobld.ttf', 15)
 LINE_COLOR = [(0, 215, 255),
               (0, 255, 204),
               (0, 134, 255),

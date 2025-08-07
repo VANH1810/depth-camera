@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import cv2
 import json
+from libs.helper import _draw_limbs, _draw_pid
 
 def parse_pose(csv_file):
     data_df = pd.read_csv(csv_file)
@@ -22,7 +23,7 @@ def parse_pose(csv_file):
             pids.append(pid)
             boxes.append(box)
             poses.append(pose)
-        poses_data[int(frame_id)] = {'pids':pids,'boxes':boxes, 'poses':poses}
+        poses_data[int(frame_id) + 60] = {'pids':pids,'boxes':boxes, 'poses':poses}
     return poses_data
 
 def positioncam2org(x,y,z, meta_data):
@@ -49,9 +50,9 @@ def positioncam2org(x,y,z, meta_data):
     return x_o, y_o, z_o
 
 if __name__ == '__main__':
-    record_folder = './recorded_data/recording_20250725_161358'
+    record_folder = 'recorded_data/recorded_data/recording_20250725_161358'
     data_file = os.path.join(record_folder, 'robot_data.jsonl')
-    csv_file = os.path.join(record_folder, 'color.csv')
+    csv_file = os.path.join('color.csv')
     distance = Distance2Cam(record_folder)
 
     metadata = Metadata(data_file)
@@ -87,6 +88,14 @@ if __name__ == '__main__':
                 ymax = int(ymin + h)
                 cx = int(xmin + w/2)
                 cy = int(ymin + h/2)
+                # x0, y0 = int(xmin), int(ymin)
+                # x1, y1 = int(xmin + w_box), int(ymin + h_box)
+                # Vẽ bounding box
+                cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
+                # Vẽ keypoints & limbs
+                pts = np.array(pose).reshape(-1, 3)
+                frame = _draw_limbs(pts[:, :2], frame)
+
                 result = distance.get_distance_at_point(cx, cy, frame_id)
                 # result2 = distance.get_distance_at_point(363, 150, frame_id)
                 if result is not None:
@@ -99,8 +108,8 @@ if __name__ == '__main__':
                     print(robotdata)
                     print(xo, yo, zo)
                 # print(result, result2)
-        # cv2.namedWindow('img',cv2.WINDOW_NORMAL)
-        # cv2.imshow('img',frame)
-        # cv2.waitKey()
+        cv2.namedWindow('img',cv2.WINDOW_NORMAL)
+        cv2.imshow('img',frame)
+        cv2.waitKey(5)
 
         frame_id +=1

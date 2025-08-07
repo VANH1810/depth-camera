@@ -12,6 +12,7 @@ class Distance2Cam:
 	def __init__(self, recording_folder):
 		"""Initialize distance tester with recording data"""
 		self.recording_folder = recording_folder
+		print("[DEBUG] Received record_folder:", recording_folder)  # 👈 Thêm dòng này
 		self.depth_batches = []
 		self.depth_metadata = None
 		self.camera_params = None
