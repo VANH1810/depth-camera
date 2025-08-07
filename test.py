@@ -77,11 +77,6 @@ class PoseWorldPipeline:
         # Dữ liệu trajectory: pid -> list of (xw, yw, zw)
         self.trajectory = {}
 
-        # Nâng cao: chuẩn bị figure offscreen để vẽ inset
-        self.fig = plt.figure(figsize=(2,2)); self.ax3d = self.fig.add_subplot(111, projection='3d')
-        self.canvas = FigureCanvas(self.fig)
-        self.inset_w, self.inset_h = inset_size
-
         # Mở video gốc
         color_path = os.path.join(record_folder, 'color.avi')
         self.vid = cv2.VideoCapture(color_path)
@@ -94,9 +89,16 @@ class PoseWorldPipeline:
 
         # Thiết lập writer
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        self.writer = cv2.VideoWriter(output_video, fourcc, fps, (width, height))
+        self.writer = cv2.VideoWriter(output_video, fourcc, fps, (width * 2, height))
         self.frame_width = width
         self.frame_height = height
+
+        # Nâng cao: chuẩn bị figure offscreen để vẽ inset
+        dpi = 100
+        self.fig = plt.figure(figsize=(width / dpi, height / dpi)); 
+        self.ax3d = self.fig.add_subplot(111, projection='3d')
+        self.canvas = FigureCanvas(self.fig)
+        self.inset_w, self.inset_h = inset_size
 
     def run(self):
         frame_id = 1
@@ -146,51 +148,48 @@ class PoseWorldPipeline:
                     cv2.putText(img, f"P{pid}: {xw:.2f},{yw:.2f},{zw:.2f}m", (x0, y1+15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255),1)
 
             # Vẽ inset 3D realtime
-            inset_img = self._render_inset()
-            # Chèn vào góc trên bên phải
-            x_off = self.frame_width - self.inset_w - 10
-            y_off = 10
-            img[y_off:y_off+self.inset_h, x_off:x_off+self.inset_w] = inset_img
-
-            self.writer.write(img)
+            traj_img = self._render_full()
+            # Combine side by side
+            combined = np.hstack([img, traj_img])
+            self.writer.write(combined)
             frame_id += 1
 
         self.vid.release()
         self.writer.release()
-        print(f"[INFO] Saved video with inset to {self.writer}")
+        print(f"[INFO] Saved side-by-side video to {self.writer}")
 
-    def _render_inset(self):
+    def _render_full(self):
         self.ax3d.clear()
-        # Gather all points
-        if self.trajectory:
-            all_pts = np.vstack([np.array(v) for v in self.trajectory.values()])
+        pts_list = list(self.trajectory.values())
+        if pts_list:
+            all_pts = np.vstack([np.array(v) for v in pts_list])
         else:
-            all_pts = np.array([[0.,0.,0.]])
-        mins = all_pts.min(axis=0); maxs = all_pts.max(axis=0)
-        span = maxs - mins; eps = 1e-2
-        span[span < eps] = eps
-        mins = mins - span*0.1; maxs = maxs + span*0.1
-        # Plot and label
+            all_pts = np.zeros((1,3))
+        mins, maxs = all_pts.min(0), all_pts.max(0)
+        span = maxs - mins
+        span[span==0] = 1e-2
+        mins -= span*0.1; maxs += span*0.1
         for pid, pts in self.trajectory.items():
             arr = np.array(pts)
-            self.ax3d.plot(arr[:,0],arr[:,1],arr[:,2], label=f'P{pid}')
+            self.ax3d.plot(arr[:,0],arr[:,1],arr[:,2],label=f'P{pid}')
             x_e,y_e,z_e = arr[-1]
-            self.ax3d.text(x_e, y_e, z_e, f'P{pid}', fontsize=6)
-        # Set proper axes
-        self.ax3d.set_xlim(mins[0], maxs[0]); self.ax3d.set_ylim(mins[1], maxs[1]); self.ax3d.set_zlim(mins[2], maxs[2])
-        self.ax3d.set_box_aspect([1,1,1])
-        self.ax3d.set_xlabel('X'); self.ax3d.set_ylabel('Y'); self.ax3d.set_zlabel('Z')
+            self.ax3d.text(x_e,y_e,z_e,f'P{pid}',fontsize=6)
+        self.ax3d.set_xlim(mins[0],maxs[0]); 
+        self.ax3d.set_ylim(mins[1],maxs[1]); 
+        self.ax3d.set_zlim(mins[2],maxs[2])
+        self.ax3d.set_xlabel('X'); 
+        self.ax3d.set_ylabel('Y'); 
+        self.ax3d.set_zlabel('Z'); 
         self.ax3d.grid(True)
-        # Draw using buffer_rgba
+        
+        # use actual canvas size
+        width,height = self.canvas.get_width_height()
         self.canvas.draw()
-        raw = self.canvas.buffer_rgba()
-        buf = np.frombuffer(raw, dtype=np.uint8)
-        h, w = map(int, self.fig.get_size_inches() * self.fig.get_dpi())
-        buf = buf.reshape(h, w, 4)
-        rgb = buf[..., :3]
-        inset = cv2.resize(rgb, (self.inset_w, self.inset_h))
-        return cv2.cvtColor(inset, cv2.COLOR_RGB2BGR)
-
+        buf = np.frombuffer(self.canvas.buffer_rgba(),dtype=np.uint8).reshape(height,width,4)
+        rgb = buf[...,:3]
+        traj = cv2.resize(rgb,(self.frame_width,self.frame_height))
+        return cv2.cvtColor(traj, cv2.COLOR_RGB2BGR)
+    
 def main():
     base_dir = os.path.dirname(__file__)
     record_folder = os.path.abspath(os.path.join(base_dir, 'recorded_data', 'recorded_data', 'recording_20250725_161358'))
