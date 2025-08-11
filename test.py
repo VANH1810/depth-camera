@@ -31,7 +31,7 @@ def parse_pose(csv_file):
             pids.append(pid)
             boxes.append(box)
             poses.append(pose)
-        poses_data[int(frame_id) + 60] = {'pids':pids,'boxes':boxes, 'poses':poses}
+        poses_data[int(frame_id)] = {'pids':pids,'boxes':boxes, 'poses':poses}
     return poses_data
 
 def positioncam2org(x,y,z, meta_data):
@@ -100,6 +100,55 @@ class PoseWorldPipeline:
         self.canvas = FigureCanvas(self.fig)
         self.inset_w, self.inset_h = inset_size
 
+        # --- Open depth video ---
+        depth_path = os.path.join(record_folder, 'depth.avi')
+        self.depth_vid = cv2.VideoCapture(depth_path)
+        if not self.depth_vid.isOpened():
+            print(f"[WARN] Cannot open depth video: {depth_path} (coverage check will be disabled)")
+            self.depth_vid = None
+            self.depth_width = None
+            self.depth_height = None
+            self.sx = self.sy = 1.0
+        else:
+            self.depth_width  = int(self.depth_vid.get(cv2.CAP_PROP_FRAME_WIDTH))
+            self.depth_height = int(self.depth_vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            # scale from color->depth coordinates
+            self.sx = self.depth_width  / float(self.frame_width)
+            self.sy = self.depth_height / float(self.frame_height)
+
+    def _bbox_depth_coverage(self, depth_img, bbox_xyxy,
+                            white_thr=245,     # >= white_thr coi là "trắng" → NO DEPTH
+                            black_floor=5,     # <= floor coi là đen/noise (tuỳ dữ liệu)
+                            inner_margin=0.10, # chỉ đo phần “ruột” bbox (cắt viền 10%)
+                            min_ratio=0.10):
+        x0, y0, x1, y1 = map(int, bbox_xyxy)
+        h, w = depth_img.shape[:2]
+        x0 = max(0, min(x0, w-1)); x1 = max(0, min(x1, w-1))
+        y0 = max(0, min(y0, h-1)); y1 = max(0, min(y1, h-1))
+        if x1 <= x0 or y1 <= y0: return 0.0, False
+
+        roi = depth_img[y0:y1, x0:x1]
+        if roi.ndim == 3: roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        if roi.dtype != np.uint8:
+            rmin, rmax = float(roi.min()), float(roi.max())
+            roi = ((roi - rmin) / (max(rmax-rmin,1e-6)) * 255.0).astype(np.uint8)
+
+        # chỉ tính phần trong để tránh viền dễ bị saturate trắng
+        H, W = roi.shape[:2]
+        dx = int(W*inner_margin); dy = int(H*inner_margin)
+        roi = roi[dy:H-dy, dx:W-dx] if (W>2*dx and H>2*dy) else roi
+
+        # valid nếu: không trắng, không quá đen
+        valid = (roi < white_thr) & (roi > black_floor)
+
+        # lọc nhiễu muối tiêu (điểm đen nhỏ trong biển trắng)
+        valid = valid.astype(np.uint8) * 255
+        k3 = np.ones((3,3), np.uint8)
+        valid = cv2.morphologyEx(valid, cv2.MORPH_OPEN, k3)  # bỏ điểm lẻ
+        valid = cv2.morphologyEx(valid, cv2.MORPH_CLOSE, k3) # nối mảng xám liền
+        ratio = float(valid.mean() / 255.0) if valid.size else 0.0
+        return ratio, (ratio >= min_ratio)
+
     def run(self):
         frame_id = 1
         while True:
@@ -107,6 +156,14 @@ class PoseWorldPipeline:
             if not ret:
                 break
             img = frame.copy()
+
+            # Đọc depth frame tương ứng (nếu có)
+            depth_frame = None
+            if self.depth_vid is not None:
+                dret, dframe = self.depth_vid.read()
+                if dret:
+                    # dùng grayscale để đo coverage
+                    depth_frame = cv2.cvtColor(dframe, cv2.COLOR_BGR2GRAY) if dframe.ndim==3 else dframe
 
             # Xử lý annotation và trajectory
             if frame_id in self.poses:
@@ -117,35 +174,82 @@ class PoseWorldPipeline:
                 ):
                     xmin, ymin, w_box, h_box, conf = box
 
-                    if conf < 0.7: continue
+                    if conf < 0.7: 
+                        print(f"[SKIP] frame {frame_id} pid {pid}: low conf={conf:.2f}")
+                        continue
 
                     x0, y0 = int(xmin), int(ymin)
                     x1, y1 = int(xmin + w_box), int(ymin + h_box)
+
+                    # ==== CHECK DEPTH COVERAGE ====
+                    depth_ratio, depth_ok = (0.0, True)
+                    if depth_frame is not None:
+                        # scale bbox (color -> depth)
+                        dx0 = int(x0 * self.sx); dy0 = int(y0 * self.sy)
+                        dx1 = int(x1 * self.sx); dy1 = int(y1 * self.sy)
+
+                        depth_ratio, depth_ok = self._bbox_depth_coverage(
+                            depth_frame, (dx0, dy0, dx1, dy1),
+                            white_thr=245,      # trắng = NO DEPTH
+                            black_floor=5,      # bỏ nhiễu quá đen nếu có
+                            inner_margin=0.10,  # cắt viền 10%
+                            min_ratio=0.50      # yêu cầu >=50% vùng xám
+                        )
+                        print(f"[COVERAGE] frame {frame_id} pid {pid}: {depth_ratio*100:.1f}% (ok={depth_ok})")
+
+
                     # Vẽ bounding box
-                    cv2.rectangle(img, (x0, y0), (x1, y1), (0, 255, 0), 2)
+                    # cv2.rectangle(img, (x0, y0), (x1, y1), (0, 255, 0), 2)
+
+                    # Vẽ bbox theo coverage + in % coverage
+                    col = (0,255,0) if depth_ok else (0,0,255)
+                    cv2.rectangle(img, (x0, y0), (x1, y1), col, 2)
+                    if depth_frame is not None:
+                        cv2.putText(img, f"depth={depth_ratio*100:.1f}%", (x0, y0-6),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1, cv2.LINE_AA)
+                    else:
+                        cv2.putText(img, "depth:N/A", (x0, y0-6),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1, cv2.LINE_AA)
+                        
                     # Vẽ keypoints & limbs
                     pts = np.array(pose).reshape(-1, 3)
                     img = _draw_limbs(pts[:, :2], img)
                     img = _draw_pid(img, [x0, y0, x1, y1], pid)
 
+                    if depth_frame is not None and not depth_ok:
+                        print(f"[WARN] frame {frame_id} pid {pid}: low depth coverage -> skip 3D")
+                        continue
+
                     # Tính 3D world
                     cx = int(xmin + w_box/2)
                     cy = int(ymin + h_box/2)
                     result = self.distance.get_distance_at_point(cx, cy, frame_id)
-                    if result is None: continue
+                    if result is None: 
+                        print(f"[SKIP] frame {frame_id} pid {pid}: no depth at ({cx},{cy}) for depth-frame={frame_id}")
+                        continue
                     _, x3d, y3d, z3d = result
 
                     meta = self.metadata.get(frame_id)
-                    if meta is None: continue
+                    if meta is None: 
+                        print(f"[SKIP] frame {frame_id} pid {pid}: no metadata for frame_id={frame_id}")
+                        continue
 
                     xw, yw, zw = positioncam2org(x3d, y3d, z3d, meta)
 
                     print("Frame", frame_id, "P", pid, "xw, yw, zw =", xw, yw, zw)
                     
                     self.trajectory.setdefault(pid, []).append((xw, yw, zw))
+
                     # Ghi nhãn toạ độ world
-                    label = f"P{pid}: {xw:.2f},{yw:.2f},{zw:.2f}m"
-                    cv2.putText(img, f"P{pid}: {xw:.2f},{yw:.2f},{zw:.2f}m", (x0, y1+15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255),1)
+                    label_world = f"P{pid}: {xw:.2f},{yw:.2f},{zw:.2f}m"
+                    y_txt1 = min(y1 + 15, self.frame_height - 10)
+                    cv2.putText(img, label_world, (x0, y_txt1),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1, cv2.LINE_AA)
+
+                    label_cam = f"Cam: {x3d:.2f},{y3d:.2f},{z3d:.2f}m"
+                    y_txt2 = min(y1 + 30, self.frame_height - 5)  # thấp hơn 15px
+                    cv2.putText(img, label_cam, (x0, y_txt2),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
 
             # Vẽ inset 3D realtime
             traj_img = self._render_full()
@@ -189,12 +293,75 @@ class PoseWorldPipeline:
         rgb = buf[...,:3]
         traj = cv2.resize(rgb,(self.frame_width,self.frame_height))
         return cv2.cvtColor(traj, cv2.COLOR_RGB2BGR)
-    
+
+    def export_keypoints_world_csv(self, out_csv, kp_score_thr=0.25, valid_only=False):
+        """
+        Xuất CSV chứa toạ độ 3D (camera, world) của từng keypoint trên từng frame.
+        - out_csv: đường dẫn file CSV đầu ra
+        - kp_score_thr: ngưỡng score KP (bỏ qua KP có score < ngưỡng)
+        - valid_only: True -> chỉ ghi những dòng có đủ depth/meta (ok=1)
+        """
+        rows = []
+        # Duyệt tất cả frame có pose
+        for f_id in sorted(self.poses.keys()):
+            meta = self.metadata.get(f_id)
+            # Duyệt qua từng person
+            for pid, box, pose in zip(
+                self.poses[f_id]['pids'],
+                self.poses[f_id]['boxes'],
+                self.poses[f_id]['poses']
+            ):
+                pts = np.array(pose).reshape(-1, 3)  # (K, 3) = (u, v, score)
+                # Duyệt qua từng keypoint
+                for k, (u, v, s) in enumerate(pts):
+                    rec = {
+                        'FrameID': int(f_id),
+                        'PID': int(pid),
+                        'KP': int(k),
+                        'u': float(u),
+                        'v': float(v),
+                        'score': float(s),
+                        'ok': 0,
+                        'x_cam': np.nan, 'y_cam': np.nan, 'z_cam': np.nan,
+                        'x_world': np.nan, 'y_world': np.nan, 'z_world': np.nan
+                    }
+
+                    # Bỏ qua theo score
+                    if s < kp_score_thr or meta is None:
+                        if not valid_only:
+                            rows.append(rec)
+                        continue
+
+                    # Lấy depth -> 3D camera tại (u,v)
+                    res = self.distance.get_distance_at_point(int(u), int(v), int(f_id))
+                    if res is None:
+                        if not valid_only:
+                            rows.append(rec)
+                        continue
+
+                    _, x3d, y3d, z3d = res
+                    # Camera -> World
+                    xw, yw, zw = positioncam2org(x3d, y3d, z3d, meta)
+
+                    rec.update({
+                        'ok': 1,
+                        'x_cam': float(x3d), 'y_cam': float(y3d), 'z_cam': float(z3d),
+                        'x_world': float(xw), 'y_world': float(yw), 'z_world': float(zw),
+                    })
+                    rows.append(rec)
+
+        df = pd.DataFrame(rows)
+        if valid_only:
+            df = df[df['ok'] == 1].reset_index(drop=True)
+        df.to_csv(out_csv, index=False)
+        print(f"[INFO] Saved keypoint world coordinates CSV to: {out_csv} (rows={len(df)})")
+
 def main():
     base_dir = os.path.dirname(__file__)
-    record_folder = os.path.abspath(os.path.join(base_dir, 'recorded_data', 'recorded_data', 'recording_20250725_161358'))
-    pose_csv      = os.path.abspath(os.path.join(base_dir, 'color.csv'))
-    output        = os.path.abspath(os.path.join(base_dir, 'vis_output.mp4'))
+    base_dir = os.path.dirname(__file__)
+    record_folder = os.path.abspath(os.path.join(base_dir, 'recorded_data', 'recording_19700104_094113'))
+    pose_csv      = os.path.abspath(os.path.join(base_dir, 'recorded_data', 'recording_19700104_094113', 'color.csv'))
+    output        = os.path.abspath(os.path.join(base_dir, 'recorded_data', 'recording_19700104_094113', 'recording_19700104_094113.mp4'))
     inset_w       = 200
     inset_h       = 200
 
@@ -207,6 +374,9 @@ def main():
         inset_size=(inset_w, inset_h)
     )
     pipeline.run()
+    # kp_csv = os.path.join(base_dir, 'kp_world_coords.csv')
+    # pipeline.export_keypoints_world_csv(kp_csv, kp_score_thr=0.25, valid_only=False)
+
 
 
 if __name__ == '__main__':
