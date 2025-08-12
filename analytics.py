@@ -434,7 +434,7 @@ class DistanceTester:
 		if self.depth_video:
 			self.depth_video.release()
 
-def find_latest_recording(base_dir="Depth_Test"):
+def find_latest_recording(base_dir="recorded_data"):
 	"""Find the latest recording folder"""
 	if not os.path.exists(base_dir):
 		return None
@@ -447,7 +447,7 @@ def find_latest_recording(base_dir="Depth_Test"):
 	recording_folders.sort(key=lambda x: os.path.getmtime(x), reverse=True)
 	return recording_folders[0]
 
-def list_available_recordings(base_dir="Depth_Test"):
+def list_available_recordings(base_dir="recorded_data"):
 	"""List all available recording folders"""
 	if not os.path.exists(base_dir):
 		print(f"[ERROR] Base directory '{base_dir}' does not exist")
@@ -495,8 +495,8 @@ def parse_arguments():
 	
 	parser.add_argument('--recording-folder', type=str,
 					   help='Path to specific recording folder')
-	parser.add_argument('--base-dir', type=str, default='Depth_Test',
-					   help='Base directory containing recordings (default: Depth_Test)')
+	parser.add_argument('--base-dir', type=str, default='recorded_data',
+					   help='Base directory containing recordings (default: recorded_data)')
 	parser.add_argument('--list', action='store_true',
 					   help='List available recordings and exit')
 	parser.add_argument('--latest', action='store_true',
@@ -512,7 +512,7 @@ def main():
 		list_available_recordings(args.base_dir)
 		return
 	
-	recording_folder = "Depth_Test"
+	recording_folder = "recorded_data"
 	
 	if args.recording_folder:
 		# Use specified folder

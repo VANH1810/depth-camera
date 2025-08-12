@@ -40,7 +40,7 @@ def positioncam2org(x,y,z, meta_data):
     y_d = meta_data['metadata']['y']
     z_d = meta_data['metadata']['z']
     z_d = meta_data['metadata']['height'] + meta_data['metadata']['z']
-    theta = meta_data['metadata']['yaw']
+    theta = np.pi - meta_data['metadata']['yaw']
     
     # position of object in robotdog coordination
     x1 = x
@@ -148,6 +148,67 @@ class PoseWorldPipeline:
         valid = cv2.morphologyEx(valid, cv2.MORPH_CLOSE, k3) # nối mảng xám liền
         ratio = float(valid.mean() / 255.0) if valid.size else 0.0
         return ratio, (ratio >= min_ratio)
+    
+    def _pick_min_depth_point(self, frame_id, bbox_xyxy,
+                            step=None,
+                            inner_margin=0.10,
+                            use_percentile=False,
+                            pct=10):
+        """
+        Chọn điểm (u,v) bên trong bbox có z_cam nhỏ nhất (gần camera nhất),
+        chỉ sample dạng lưới (bỏ mép bằng inner_margin), KHÔNG dùng depth_frame để lọc.
+        Trả về: (u_best, v_best, x3d, y3d, z3d) hoặc None nếu không có điểm hợp lệ.
+        """
+        x0, y0, x1, y1 = map(int, bbox_xyxy)
+        Wc, Hc = self.frame_width, self.frame_height
+        x0 = max(0, min(x0, Wc-1)); x1 = max(0, min(x1, Wc-1))
+        y0 = max(0, min(y0, Hc-1)); y1 = max(0, min(y1, Hc-1))
+        if x1 <= x0 or y1 <= y0:
+            return None
+
+        # Cắt "ruột" bbox để tránh mép (thường dễ trắng/noise)
+        bw, bh = (x1 - x0), (y1 - y0)
+        dx = int(bw * inner_margin)
+        dy = int(bh * inner_margin)
+        xx0 = x0 + dx; xx1 = x1 - dx
+        yy0 = y0 + dy; yy1 = y1 - dy
+        if xx1 <= xx0 or yy1 <= yy0:
+            xx0, yy0, xx1, yy1 = x0, y0, x1, y1  # fallback nếu bbox quá nhỏ
+
+        # Bước lấy mẫu: mặc định ~15 điểm theo chiều ngắn
+        if step is None:
+            step = max(2, int(min(xx1-xx0, yy1-yy0) / 20))
+        xs = range(xx0, xx1 + 1, step)
+        ys = range(yy0, yy1 + 1, step)
+
+        # Không kiểm tra depth_frame nữa: lấy toàn bộ grid points
+        candidates = [(u, v) for v in ys for u in xs]
+        if not candidates:
+            return None
+
+        # Query 3D tại các điểm ứng viên, chọn z nhỏ nhất
+        valid = []
+        for (u, v) in candidates:
+            res = self.distance.get_distance_at_point(int(u), int(v), int(frame_id))
+            if res is None:
+                continue
+            _, x3d, y3d, z3d = res
+            if z3d is None or not np.isfinite(z3d) or z3d <= 0:
+                continue
+            valid.append((z3d, u, v, x3d, y3d))
+
+        if not valid:
+            return None
+
+        valid.sort(key=lambda t: t[0])  # z tăng dần
+        if use_percentile and len(valid) > 4:
+            k = max(0, min(len(valid) - 1, int(len(valid) * (pct / 100.0))))
+            z, u, v, x3d, y3d = valid[k]
+        else:
+            z, u, v, x3d, y3d = valid[0]
+
+        return (int(u), int(v), float(x3d), float(y3d), float(z))
+
 
     def run(self):
         frame_id = 1
@@ -223,11 +284,37 @@ class PoseWorldPipeline:
                     # Tính 3D world
                     cx = int(xmin + w_box/2)
                     cy = int(ymin + h_box/2)
+
                     result = self.distance.get_distance_at_point(cx, cy, frame_id)
                     if result is None: 
                         print(f"[SKIP] frame {frame_id} pid {pid}: no depth at ({cx},{cy}) for depth-frame={frame_id}")
                         continue
                     _, x3d, y3d, z3d = result
+
+                    # best = self._pick_min_depth_point(
+                    #     frame_id,
+                    #     (x0, y0, x1, y1),
+                    #     step=None,              # auto theo kích thước bbox (tăng lên 6–10 nếu muốn nhanh hơn)
+                    #     inner_margin=0.10,      # bỏ viền 10%
+                    #     use_percentile= False,    # ổn định hơn min tuyệt đối
+                    #     pct=15                  # lấy ~bách phân vị 15% của z (gần camera)
+                    # )
+
+                    # if best is None:
+                    #     # Fallback: tâm bbox
+                    #     u_vis = int(xmin + w_box/2)
+                    #     v_vis = int(ymin + h_box/2)
+                    #     result = self.distance.get_distance_at_point(u_vis, v_vis, frame_id)
+                    #     if result is None:
+                    #         print(f"[SKIP] frame {frame_id} pid {pid}: no valid depth (min-point & center fallback failed)")
+                    #         continue
+                    #     _, x3d, y3d, z3d = result
+                    # else:
+                    #     u_vis, v_vis, x3d, y3d, z3d = best
+
+                    # cv2.circle(img, (u_vis, v_vis), 3, (255, 0, 255), -1)
+                    # cv2.putText(img, f"pick:{u_vis},{v_vis} z={z3d:.2f}m", (u_vis+4, v_vis-4),
+                    #             cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1, cv2.LINE_AA)
 
                     meta = self.metadata.get(frame_id)
                     if meta is None: 
@@ -359,9 +446,9 @@ class PoseWorldPipeline:
 def main():
     base_dir = os.path.dirname(__file__)
     base_dir = os.path.dirname(__file__)
-    record_folder = os.path.abspath(os.path.join(base_dir, 'recorded_data', 'recording_19700104_094113'))
-    pose_csv      = os.path.abspath(os.path.join(base_dir, 'recorded_data', 'recording_19700104_094113', 'color.csv'))
-    output        = os.path.abspath(os.path.join(base_dir, 'recorded_data', 'recording_19700104_094113', 'recording_19700104_094113.mp4'))
+    record_folder = os.path.abspath(os.path.join(base_dir, 'recorded_data', 'recording_19700105_045503'))
+    pose_csv      = os.path.abspath(os.path.join(base_dir, 'recorded_data', 'recording_19700105_045503', 'color.csv'))
+    output        = os.path.abspath(os.path.join(base_dir, 'recorded_data', 'recording_19700105_045503', 'recording_19700105_045503.mp4'))
     inset_w       = 200
     inset_h       = 200
 
@@ -374,10 +461,8 @@ def main():
         inset_size=(inset_w, inset_h)
     )
     pipeline.run()
-    # kp_csv = os.path.join(base_dir, 'kp_world_coords.csv')
+    # kp_csv = os.path.join(base_dir, 'recording_19700105_045503')
     # pipeline.export_keypoints_world_csv(kp_csv, kp_score_thr=0.25, valid_only=False)
-
-
 
 if __name__ == '__main__':
     main()
