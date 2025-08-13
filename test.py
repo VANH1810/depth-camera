@@ -13,7 +13,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from libs.dist2camera import Distance2Cam
 from libs.robotmetadata import Metadata
 from libs.helper import _draw_limbs, _draw_pid
-
+from kalman_filter import KalmanFilter3D
 
 def parse_pose(csv_file):
     data_df = pd.read_csv(csv_file)
@@ -56,6 +56,23 @@ def positioncam2org(x,y,z, meta_data):
     z_o = z_d + z1
     
     return x_o, y_o, z_o
+
+def _line_intersection(p1, p2, p3, p4, eps=1e-6):
+    """
+    Giao điểm của 2 đường thẳng (p1-p2) và (p3-p4).
+    p* = (x, y). Trả về (x, y) hoặc None nếu gần như song song / suy biến.
+    """
+    x1, y1 = p1; x2, y2 = p2
+    x3, y3 = p3; x4, y4 = p4
+    den = (x1 - x2)*(y3 - y4) - (y1 - y2)*(x3 - x4)
+    if abs(den) < eps:
+        return None
+    # dùng công thức định thức
+    det1 = (x1*y2 - y1*x2)
+    det2 = (x3*y4 - y3*x4)
+    px = (det1*(x3 - x4) - (x1 - x2)*det2) / den
+    py = (det1*(y3 - y4) - (y1 - y2)*det2) / den
+    return (float(px), float(py))
 
 class PoseWorldPipeline:
     """
@@ -100,6 +117,8 @@ class PoseWorldPipeline:
         self.canvas = FigureCanvas(self.fig)
         self.inset_w, self.inset_h = inset_size
 
+        self._L_SH, self._R_SH, self._L_HIP, self._R_HIP = 5, 6, 11, 12
+
         # --- Open depth video ---
         depth_path = os.path.join(record_folder, 'depth.avi')
         self.depth_vid = cv2.VideoCapture(depth_path)
@@ -109,10 +128,11 @@ class PoseWorldPipeline:
             self.depth_width = None
             self.depth_height = None
             self.sx = self.sy = 1.0
-        else:
+
+        if self.depth_vid is not None:
             self.depth_width  = int(self.depth_vid.get(cv2.CAP_PROP_FRAME_WIDTH))
             self.depth_height = int(self.depth_vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            # scale from color->depth coordinates
+            # scale từ toạ độ color -> depth
             self.sx = self.depth_width  / float(self.frame_width)
             self.sy = self.depth_height / float(self.frame_height)
 
@@ -149,67 +169,56 @@ class PoseWorldPipeline:
         ratio = float(valid.mean() / 255.0) if valid.size else 0.0
         return ratio, (ratio >= min_ratio)
     
-    def _pick_min_depth_point(self, frame_id, bbox_xyxy,
-                            step=None,
-                            inner_margin=0.10,
-                            use_percentile=False,
-                            pct=10):
+    def _torso_point_uv(self, pose, s_thr=0.30):
         """
-        Chọn điểm (u,v) bên trong bbox có z_cam nhỏ nhất (gần camera nhất),
-        chỉ sample dạng lưới (bỏ mép bằng inner_margin), KHÔNG dùng depth_frame để lọc.
-        Trả về: (u_best, v_best, x3d, y3d, z3d) hoặc None nếu không có điểm hợp lệ.
+        Trả về (u, v) là giao của 2 đoạn:
+        (RShoulder - LHip) và (LShoulder - RHip).
+        KHÔNG fallback. Nếu thiếu KP hoặc không cắt nhau -> (None, None).
         """
-        x0, y0, x1, y1 = map(int, bbox_xyxy)
-        Wc, Hc = self.frame_width, self.frame_height
-        x0 = max(0, min(x0, Wc-1)); x1 = max(0, min(x1, Wc-1))
-        y0 = max(0, min(y0, Hc-1)); y1 = max(0, min(y1, Hc-1))
-        if x1 <= x0 or y1 <= y0:
+        pts = np.array(pose).reshape(-1, 3)
+        K = pts.shape[0]
+
+        def ok(idx):
+            return (0 <= idx < K and pts[idx, 2] >= s_thr
+                    and np.isfinite(pts[idx, 0]) and np.isfinite(pts[idx, 1]))
+
+        if not (ok(self._R_SH) and ok(self._L_HIP) and ok(self._L_SH) and ok(self._R_HIP)):
+            return None, None
+
+        p_RS = (float(pts[self._R_SH, 0]), float(pts[self._R_SH, 1]))
+        p_LH = (float(pts[self._L_HIP, 0]), float(pts[self._L_HIP, 1]))
+        p_LS = (float(pts[self._L_SH, 0]), float(pts[self._L_SH, 1]))
+        p_RH = (float(pts[self._R_HIP, 0]), float(pts[self._R_HIP, 1]))
+
+        inter = _line_intersection(p_RS, p_LH, p_LS, p_RH)
+        if inter is None or not np.isfinite(inter[0]) or not np.isfinite(inter[1]):
+            return None, None
+
+        return int(round(inter[0])), int(round(inter[1]))
+    
+    def _robust_depth_at(self, u, v, frame_id, half_win=1):
+        """
+        Lấy depth/3D robust quanh (u,v) bằng median trong ô vuông (2*half_win+1)^2.
+        Trả về (x3d,y3d,z3d) hoặc None nếu không có điểm hợp lệ.
+        """
+        val = []
+        for dv in range(-half_win, half_win+1):
+            for du in range(-half_win, half_win+1):
+                uu = int(np.clip(u+du, 0, self.frame_width-1))
+                vv = int(np.clip(v+dv, 0, self.frame_height-1))
+                res = self.distance.get_distance_at_point(uu, vv, frame_id)
+                if res is None: 
+                    continue
+                _, x3d, y3d, z3d = res
+                if z3d is None or not np.isfinite(z3d) or z3d <= 0:
+                    continue
+                val.append((x3d, y3d, z3d))
+        if not val:
             return None
-
-        # Cắt "ruột" bbox để tránh mép (thường dễ trắng/noise)
-        bw, bh = (x1 - x0), (y1 - y0)
-        dx = int(bw * inner_margin)
-        dy = int(bh * inner_margin)
-        xx0 = x0 + dx; xx1 = x1 - dx
-        yy0 = y0 + dy; yy1 = y1 - dy
-        if xx1 <= xx0 or yy1 <= yy0:
-            xx0, yy0, xx1, yy1 = x0, y0, x1, y1  # fallback nếu bbox quá nhỏ
-
-        # Bước lấy mẫu: mặc định ~15 điểm theo chiều ngắn
-        if step is None:
-            step = max(2, int(min(xx1-xx0, yy1-yy0) / 20))
-        xs = range(xx0, xx1 + 1, step)
-        ys = range(yy0, yy1 + 1, step)
-
-        # Không kiểm tra depth_frame nữa: lấy toàn bộ grid points
-        candidates = [(u, v) for v in ys for u in xs]
-        if not candidates:
-            return None
-
-        # Query 3D tại các điểm ứng viên, chọn z nhỏ nhất
-        valid = []
-        for (u, v) in candidates:
-            res = self.distance.get_distance_at_point(int(u), int(v), int(frame_id))
-            if res is None:
-                continue
-            _, x3d, y3d, z3d = res
-            if z3d is None or not np.isfinite(z3d) or z3d <= 0:
-                continue
-            valid.append((z3d, u, v, x3d, y3d))
-
-        if not valid:
-            return None
-
-        valid.sort(key=lambda t: t[0])  # z tăng dần
-        if use_percentile and len(valid) > 4:
-            k = max(0, min(len(valid) - 1, int(len(valid) * (pct / 100.0))))
-            z, u, v, x3d, y3d = valid[k]
-        else:
-            z, u, v, x3d, y3d = valid[0]
-
-        return (int(u), int(v), float(x3d), float(y3d), float(z))
-
-
+        arr = np.array(val, dtype=float)
+        med = np.median(arr, axis=0)
+        return float(med[0]), float(med[1]), float(med[2])
+    
     def run(self):
         frame_id = 1
         while True:
@@ -282,39 +291,30 @@ class PoseWorldPipeline:
                         continue
 
                     # Tính 3D world
-                    cx = int(xmin + w_box/2)
-                    cy = int(ymin + h_box/2)
+                    # cx = int(xmin + w_box/2)
+                    # cy = int(ymin + h_box/2)
 
-                    result = self.distance.get_distance_at_point(cx, cy, frame_id)
-                    if result is None: 
-                        print(f"[SKIP] frame {frame_id} pid {pid}: no depth at ({cx},{cy}) for depth-frame={frame_id}")
+                    # result = self.distance.get_distance_at_point(cx, cy, frame_id)
+                    # if result is None: 
+                    #     print(f"[SKIP] frame {frame_id} pid {pid}: no depth at ({cx},{cy}) for depth-frame={frame_id}")
+                    #     continue
+                    # _, x3d, y3d, z3d = result
+
+                    # ==== CHỌN ĐIỂM BỤNG (u,v) — STRICT ====
+                    u_vis, v_vis = self._torso_point_uv(pose, s_thr=0.30)
+                    if u_vis is None:
+                        print(f"[SKIP] frame {frame_id} pid {pid}: no torso intersection")
                         continue
-                    _, x3d, y3d, z3d = result
 
-                    # best = self._pick_min_depth_point(
-                    #     frame_id,
-                    #     (x0, y0, x1, y1),
-                    #     step=None,              # auto theo kích thước bbox (tăng lên 6–10 nếu muốn nhanh hơn)
-                    #     inner_margin=0.10,      # bỏ viền 10%
-                    #     use_percentile= False,    # ổn định hơn min tuyệt đối
-                    #     pct=15                  # lấy ~bách phân vị 15% của z (gần camera)
-                    # )
+                    # ==== DEPTH/3D tại điểm bụng (median lọc nhiễu) ====
+                    depth_3d = self._robust_depth_at(u_vis, v_vis, frame_id, half_win=1)
+                    if depth_3d is None:
+                        print(f"[SKIP] frame {frame_id} pid {pid}: no depth at torso point")
+                        continue
+                    x3d, y3d, z3d = depth_3d
 
-                    # if best is None:
-                    #     # Fallback: tâm bbox
-                    #     u_vis = int(xmin + w_box/2)
-                    #     v_vis = int(ymin + h_box/2)
-                    #     result = self.distance.get_distance_at_point(u_vis, v_vis, frame_id)
-                    #     if result is None:
-                    #         print(f"[SKIP] frame {frame_id} pid {pid}: no valid depth (min-point & center fallback failed)")
-                    #         continue
-                    #     _, x3d, y3d, z3d = result
-                    # else:
-                    #     u_vis, v_vis, x3d, y3d, z3d = best
-
-                    # cv2.circle(img, (u_vis, v_vis), 3, (255, 0, 255), -1)
-                    # cv2.putText(img, f"pick:{u_vis},{v_vis} z={z3d:.2f}m", (u_vis+4, v_vis-4),
-                    #             cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1, cv2.LINE_AA)
+                    # Vẽ marker tại điểm bụng
+                    cv2.circle(img, (int(u_vis), int(v_vis)), 3, (255, 0, 255), -1)
 
                     meta = self.metadata.get(frame_id)
                     if meta is None: 
