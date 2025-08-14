@@ -568,6 +568,150 @@ def relative_contrast(Td: np.ndarray, bbox: Optional[Tuple[int, int, int, int]])
     Bq = float(np.percentile(B, 99))
     return float(Mq / (Bq + 1e-6))
 
+def _expand_clip_xywh(x, y, w, h, pad, W, H):
+    """Expand bbox by pad pixels and clip to image size."""
+    x = int(max(0, x - pad))
+    y = int(max(0, y - pad))
+    w = int(min(W - x, w + 2 * pad))
+    h = int(min(H - y, h + 2 * pad))
+    if w <= 0 or h <= 0:
+        return None
+    return (x, y, w, h)
+
+def _as_xywh_candidates(box, W, H):
+    """
+    Build both interpretations (xywh) and (x0y0x1y1)->xywh if possible.
+    Returns list of valid (x,y,w,h) candidates clipped to image.
+    """
+    cands = []
+
+    # Normalize input to list of 4 numbers
+    if isinstance(box, dict):
+        # try common keys
+        if all(k in box for k in ("x","y","w","h")):
+            bx = [box["x"], box["y"], box["w"], box["h"]]
+        elif all(k in box for k in ("x0","y0","x1","y1")):
+            bx = [box["x0"], box["y0"], box["x1"], box["y1"]]
+        else:
+            bx = list(box.values())[:4]
+    else:
+        bx = list(box)[:4]
+
+    if len(bx) != 4:
+        return cands
+
+    b0, b1, b2, b3 = [float(v) for v in bx]
+
+    # Interpretation A: (x, y, w, h)
+    x, y, w, h = b0, b1, b2, b3
+    if w > 0 and h > 0:
+        x0 = max(0.0, x); y0 = max(0.0, y)
+        x1 = min(float(W), x + w); y1 = min(float(H), y + h)
+        ww = x1 - x0; hh = y1 - y0
+        if ww > 0 and hh > 0:
+            cands.append( (int(x0), int(y0), int(ww), int(hh)) )
+
+    # Interpretation B: (x0, y0, x1, y1)
+    x0, y0, x1, y1 = b0, b1, b2, b3
+    if x1 > x0 and y1 > y0:
+        x0c = max(0.0, x0); y0c = max(0.0, y0)
+        x1c = min(float(W), x1); y1c = min(float(H), y1)
+        ww = x1c - x0c; hh = y1c - y0c
+        if ww > 0 and hh > 0:
+            cands.append( (int(x0c), int(y0c), int(ww), int(hh)) )
+
+    # Deduplicate candidates
+    uniq = []
+    seen = set()
+    for c in cands:
+        if c not in seen:
+            uniq.append(c); seen.add(c)
+    return uniq
+
+def to_xywh(box, W, H):
+    """
+    Robustly convert a single bbox (various formats) to (x,y,w,h) clipped to image.
+    If both interpretations valid, choose the one with larger area.
+    Returns None if neither works.
+    """
+    cands = _as_xywh_candidates(box, W, H)
+    if not cands:
+        return None
+    if len(cands) == 1:
+        return cands[0]
+    # choose the one with larger area (usually correct)
+    areas = [(w*h, i) for i, (_, _, w, h) in enumerate(cands)]
+    _, idx = max(areas)
+    return cands[idx]
+
+def pick_bbox_for_frame(poses_by_frame: dict,
+                        frame_idx: int,
+                        W: int, H: int,
+                        pid_prefer: int | None = None,
+                        mode: str = "largest",  # "largest" | "union" | "first" | "pid"
+                        pad: int = 8) -> tuple[int,int,int,int] | None:
+    """
+    Return a bbox (x,y,w,h) for this frame.
+    - If pid_prefer is not None or mode=="pid", pick box of that PID if available.
+    - mode="largest": pick the largest-area box.
+    - mode="first":   pick the first valid box.
+    - mode="union":   union of all valid boxes in the frame.
+    - pad: expand bbox by 'pad' pixels (then clip).
+    """
+    info = poses_by_frame.get(int(frame_idx))
+    if not info:
+        return None
+
+    boxes = info.get('boxes') or []
+    pids  = info.get('pids')  or list(range(len(boxes)))
+
+    # collect candidate xywh boxes (+ keep pid)
+    cand_xywh = []
+    for b, p in zip(boxes, pids):
+        xywh = to_xywh(b, W, H)
+        if xywh is None: 
+            continue
+        cand_xywh.append( (p, xywh) )
+
+    if not cand_xywh:
+        return None
+
+    # If choose by PID
+    target_pid = pid_prefer if (pid_prefer is not None or mode == "pid") else None
+    if target_pid is not None:
+        for p, (x,y,w,h) in cand_xywh:
+            if int(p) == int(target_pid):
+                return _expand_clip_xywh(x, y, w, h, pad, W, H)
+        # if requested PID not found, fall back to largest
+        mode = "largest"
+
+    if mode == "first":
+        x,y,w,h = cand_xywh[0][1]
+        return _expand_clip_xywh(x, y, w, h, pad, W, H)
+
+    if mode == "union":
+        x0 = y0 = +10**9
+        x1 = y1 = -10**9
+        for _, (x,y,w,h) in cand_xywh:
+            x0 = min(x0, x); y0 = min(y0, y)
+            x1 = max(x1, x+w); y1 = max(y1, y+h)
+        if x1 <= x0 or y1 <= y0:
+            return None
+        x, y, w, h = int(x0), int(y0), int(x1-x0), int(y1-y0)
+        return _expand_clip_xywh(x, y, w, h, pad, W, H)
+
+    # default: largest-area
+    best = None
+    best_area = -1
+    for _, (x,y,w,h) in cand_xywh:
+        a = w*h
+        if a > best_area:
+            best_area = a
+            best = (x,y,w,h)
+    if best is None:
+        return None
+    return _expand_clip_xywh(*best, pad=pad, W=W, H=H)
+
 # ==========================
 # Main
 # ==========================
@@ -614,7 +758,7 @@ if __name__ == "__main__":
     writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (W, H))
 
     # Optional bbox M for Relative Contrast (set to None if unknown)
-    bbox_for_frame = None  # e.g., (x, y, w, h)
+    poses_by_frame = parse_pose(os.path.join(record_folder, 'color.csv')) 
 
     # Loop
     mc = MotCompPy(K, (H, W), depth_scale=ds)
@@ -688,6 +832,16 @@ if __name__ == "__main__":
             # Denoise + metrics
             Td = denoise_time(mc.time_img, mc.event_counts, min_counts=1, ksize=5)
             mu, var = image_mean_var(Td, mc.event_counts, min_counts=1)
+
+            bbox_for_frame = pick_bbox_for_frame(
+                poses_by_frame,
+                frame_idx=frame_idx,
+                W=W, H=H,
+                pid_prefer=None,       # hoặc đặt PID bạn muốn theo dõi
+                mode="largest",        # "largest" | "union" | "first" | "pid"
+                pad=8
+            )
+
             rc = relative_contrast(Td, bbox_for_frame)
 
             times_ms.append(dt_ms)
