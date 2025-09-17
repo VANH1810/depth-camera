@@ -60,7 +60,7 @@ Dự án xử lý cảm biến và video cho robot: trích xuất độ sâu, qu
   - Liên kết: `./metadata/plot_imu_data.py`
   - Đọc file trong `metadata/Metadata/*.txt`, vẽ và lưu `height_vs_time.png`, `velocity_vs_time.png`, `angular_velocity_vs_time.png`, `position_vs_time.png`, và `trajectory.gif`.
 
-## Thư mục dữ liệu (tham chiếu, không mô tả chi tiết)
+## Thư mục dữ liệu
 
 - `recorded_data/`, `Depth_Test/`, `csv/`: chứa dữ liệu mẫu (video, depth batch, tham số camera, csv pose, ...). 
 
